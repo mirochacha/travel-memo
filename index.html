@@ -30,6 +30,12 @@
         <h1 id="capture-title">心が動いた、その場で。</h1>
         <p class="capture-copy">話すだけ。あとから直して保存できます。</p>
 
+        <button id="destination-button" class="destination-button" type="button">
+          <span>保存先</span>
+          <strong id="destination-name">未整理</strong>
+          <span aria-hidden="true">⌄</span>
+        </button>
+
         <button id="speech-button" class="speech-button" type="button" aria-describedby="speech-status">
           <span class="mic-ring" aria-hidden="true">
             <svg viewBox="0 0 24 24" role="img"><path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-5a3.5 3.5 0 1 0-7 0v5A3.5 3.5 0 0 0 12 15Z"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7"/></svg>
@@ -61,6 +67,13 @@
           </div>
           <span id="note-count" class="note-count">0件</span>
         </div>
+        <div class="folder-toolbar">
+          <div id="folder-tabs" class="folder-tabs" role="tablist" aria-label="旅のフォルダー"></div>
+          <div class="folder-actions">
+            <button id="new-folder-button" class="folder-action-button" type="button">＋ フォルダー</button>
+            <button id="download-folder-button" class="folder-action-button" type="button">↓ 書き出す</button>
+          </div>
+        </div>
         <div id="notes-list" class="notes-list" aria-live="polite"></div>
         <div id="empty-state" class="empty-state">
           <div class="empty-icon" aria-hidden="true">✦</div>
@@ -81,6 +94,8 @@
         </div>
         <button class="icon-button" type="button" data-close="editor-dialog" aria-label="閉じる">×</button>
       </div>
+      <label class="field-label" for="note-folder">保存先フォルダー</label>
+      <select id="note-folder" class="folder-select"></select>
       <label class="sr-only" for="note-text">旅メモ本文</label>
       <textarea id="note-text" rows="7" maxlength="2000" placeholder="風景、音、香り。その場で感じたことを…" required></textarea>
       <div class="char-row"><span id="recognition-hint"></span><span id="char-count">0 / 2000</span></div>
@@ -104,6 +119,7 @@
       <dl class="detail-meta">
         <div><dt>日時</dt><dd id="detail-date"></dd></div>
         <div><dt>入力方法</dt><dd id="detail-method"></dd></div>
+        <div><dt>フォルダー</dt><dd id="detail-folder"></dd></div>
       </dl>
       <p id="detail-text" class="detail-text"></p>
       <audio id="detail-audio" controls hidden></audio>
@@ -128,10 +144,34 @@
       <p id="record-status" class="record-status">録音ボタンを押すと始まります</p>
       <p id="record-timer" class="record-timer">00:00</p>
       <audio id="record-preview" controls hidden></audio>
+      <label class="field-label" for="audio-folder">保存先フォルダー</label>
+      <select id="audio-folder" class="folder-select"></select>
       <div class="sheet-actions audio-actions">
         <button id="record-button" class="record-button" type="button">● 録音する</button>
         <button id="save-audio-button" class="primary-button" type="button" hidden>音声を保存</button>
       </div>
+    </section>
+  </dialog>
+
+  <dialog id="folder-dialog" class="sheet-dialog">
+    <section class="sheet folder-sheet">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-header">
+        <div>
+          <p class="section-kicker">TRIP FOLDERS</p>
+          <h2>旅のフォルダー</h2>
+        </div>
+        <button class="icon-button" type="button" data-close="folder-dialog" aria-label="閉じる">×</button>
+      </div>
+      <p class="folder-help">保存先を選ぶか、新しい旅のフォルダーを作れます。</p>
+      <div id="folder-picker-list" class="folder-picker-list"></div>
+      <form id="folder-form" class="folder-form">
+        <label class="field-label" for="folder-name">新しいフォルダー名</label>
+        <div class="folder-form-row">
+          <input id="folder-name" type="text" maxlength="40" placeholder="例：上高地" required>
+          <button class="primary-button" type="submit">作成</button>
+        </div>
+      </form>
     </section>
   </dialog>
 

@@ -2,8 +2,9 @@
   'use strict';
 
   const DB_NAME = 'tabi-memo-db';
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   const STORE_NAME = 'notes';
+  const FOLDERS_STORE = 'folders';
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const methodLabels = {
     speech: '🎙 音声入力',
@@ -26,6 +27,8 @@
   let timerId;
   let audioUrl;
   let detailAudioUrl;
+  let activeFolderId = 'all';
+  let currentFolderId = localStorage.getItem('tabi-memo-current-folder') || '';
 
   const $ = (selector) => document.querySelector(selector);
   const speechButton = $('#speech-button');
@@ -39,6 +42,7 @@
   const detailDialog = $('#detail-dialog');
   const audioDialog = $('#audio-dialog');
   const confirmDialog = $('#confirm-dialog');
+  const folderDialog = $('#folder-dialog');
   const toast = $('#toast');
 
   function openDatabase() {
@@ -50,16 +54,19 @@
           const store = database.createObjectStore(STORE_NAME, { keyPath: 'id' });
           store.createIndex('createdAt', 'createdAt');
         }
+        if (!database.objectStoreNames.contains(FOLDERS_STORE)) {
+          database.createObjectStore(FOLDERS_STORE, { keyPath: 'id' });
+        }
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
   }
 
-  function transact(mode, action) {
+  function transact(mode, action, storeName = STORE_NAME) {
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, mode);
-      const store = tx.objectStore(STORE_NAME);
+      const tx = db.transaction(storeName, mode);
+      const store = tx.objectStore(storeName);
       let result;
       try { result = action(store); } catch (error) { reject(error); return; }
       tx.oncomplete = () => resolve(result?.result);
@@ -72,6 +79,8 @@
   const getNote = (id) => transact('readonly', (store) => store.get(id));
   const putNote = (note) => transact('readwrite', (store) => store.put(note));
   const removeNote = (id) => transact('readwrite', (store) => store.delete(id));
+  const getAllFolders = () => transact('readonly', (store) => store.getAll(), FOLDERS_STORE);
+  const putFolder = (folder) => transact('readwrite', (store) => store.put(folder), FOLDERS_STORE);
 
   function escapeHtml(value = '') {
     return value.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
@@ -100,8 +109,38 @@
     return new Intl.DateTimeFormat('ja-JP', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(dateValue));
   }
 
+  function folderName(folderId, folders) {
+    if (!folderId) return '未整理';
+    return folders.find((folder) => folder.id === folderId)?.name || '未整理';
+  }
+
+  function folderOptions(folders, selectedId = '') {
+    return [{ id: '', name: '未整理' }, ...folders]
+      .map((folder) => `<option value="${folder.id}"${folder.id === selectedId ? ' selected' : ''}>${escapeHtml(folder.name)}</option>`)
+      .join('');
+  }
+
+  function renderFolderControls(folders, allNotes) {
+    if (currentFolderId && !folders.some((folder) => folder.id === currentFolderId)) currentFolderId = '';
+    if (activeFolderId !== 'all' && activeFolderId && !folders.some((folder) => folder.id === activeFolderId)) activeFolderId = 'all';
+    const tabs = [{ id: 'all', name: 'すべて' }, { id: '', name: '未整理' }, ...folders];
+    $('#folder-tabs').innerHTML = tabs.map((folder) => {
+      const count = folder.id === 'all' ? allNotes.length : allNotes.filter((note) => (note.folderId || '') === folder.id).length;
+      return `<button class="folder-tab" type="button" role="tab" data-folder-filter="${folder.id}" aria-selected="${folder.id === activeFolderId}">${escapeHtml(folder.name)} <span>${count}</span></button>`;
+    }).join('');
+    $('#destination-name').textContent = folderName(currentFolderId, folders);
+    $('#folder-picker-list').innerHTML = [{ id: '', name: '未整理' }, ...folders].map((folder) => {
+      const count = allNotes.filter((note) => (note.folderId || '') === folder.id).length;
+      return `<button class="folder-picker-button${folder.id === currentFolderId ? ' current' : ''}" type="button" data-pick-folder="${folder.id}"><strong>${escapeHtml(folder.name)}</strong><span>${count}件${folder.id === currentFolderId ? '・保存先' : ''}</span></button>`;
+    }).join('');
+    $('#download-folder-button').textContent = activeFolderId === 'all' ? '↓ 全件を書き出す' : '↓ このフォルダー';
+  }
+
   async function renderNotes() {
-    const notes = (await getAllNotes()).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const [allNotesRaw, folders] = await Promise.all([getAllNotes(), getAllFolders()]);
+    const allNotes = allNotesRaw.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    renderFolderControls(folders, allNotes);
+    const notes = activeFolderId === 'all' ? allNotes : allNotes.filter((note) => (note.folderId || '') === activeFolderId);
     $('#note-count').textContent = `${notes.length}件`;
     $('#empty-state').hidden = notes.length > 0;
     const groups = new Map();
@@ -118,7 +157,7 @@
             <time class="note-time" datetime="${note.createdAt}">${formatTime(note.createdAt)}</time>
             <span class="note-main">
               <span class="note-body">${escapeHtml(note.body || '音声メモ')}</span>
-              <span class="note-method">${methodLabels[note.inputMethod] || '旅メモ'}</span>
+              <span class="note-method">${methodLabels[note.inputMethod] || '旅メモ'}<span class="note-folder">${escapeHtml(folderName(note.folderId, folders))}</span></span>
             </span>
             <span class="note-arrow" aria-hidden="true">›</span>
           </button>`).join('')}
@@ -131,10 +170,12 @@
     window.setTimeout(() => toast.classList.remove('show'), 1800);
   }
 
-  function openEditor({ body = '', method = 'text', id = null, speech = false } = {}) {
+  async function openEditor({ body = '', method = 'text', id = null, speech = false, folderId = currentFolderId } = {}) {
     editingId = id;
     editorMethod = method;
     noteText.value = body;
+    const folders = await getAllFolders();
+    $('#note-folder').innerHTML = folderOptions(folders, folderId || '');
     $('#editor-title').textContent = id ? '旅メモを編集' : speech ? '認識結果を確認' : '今感じたことを書こう';
     $('#editor-kicker').textContent = id ? 'EDIT NOTE' : speech ? 'SPEECH RESULT' : 'NEW NOTE';
     $('#recognition-hint').textContent = speech ? '施設名などを確認してください' : '';
@@ -158,16 +199,32 @@
     const body = noteText.value.trim();
     if (!body) return;
     const now = new Date().toISOString();
+    const folderId = $('#note-folder').value;
     if (editingId) {
       const current = await getNote(editingId);
       if (!current) return;
-      await putNote({ ...current, body, updatedAt: now });
+      await putNote({ ...current, body, folderId, updatedAt: now });
     } else {
-      await putNote({ id: crypto.randomUUID(), body, inputMethod: editorMethod, createdAt: now, updatedAt: now });
+      await putNote({ id: crypto.randomUUID(), body, folderId, inputMethod: editorMethod, createdAt: now, updatedAt: now });
     }
     closeEditor();
     await renderNotes();
     showToast();
+  }
+
+  function mergeRecognitionText(existing, incoming) {
+    const base = existing.trim();
+    const next = incoming.trim();
+    if (!next) return base;
+    if (!base) return next;
+    if (base === next || base.endsWith(next) || base.includes(next)) return base;
+    if (next.startsWith(base)) return next;
+    const maxOverlap = Math.min(base.length, next.length);
+    for (let length = maxOverlap; length > 0; length -= 1) {
+      if (base.slice(-length) === next.slice(0, length)) return base + next.slice(length);
+    }
+    const needsSpace = /[A-Za-z0-9]$/.test(base) && /^[A-Za-z0-9]/.test(next);
+    return `${base}${needsSpace ? ' ' : ''}${next}`;
   }
 
   function setupRecognition() {
@@ -180,16 +237,16 @@
     recognition = new SpeechRecognition();
     recognition.lang = 'ja-JP';
     recognition.interimResults = true;
-    recognition.continuous = true;
+    recognition.continuous = false;
 
     recognition.onresult = (event) => {
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
         const text = event.results[i][0].transcript;
-        if (event.results[i].isFinal) finalTranscript += text;
-        else interim += text;
+        if (event.results[i].isFinal) finalTranscript = mergeRecognitionText(finalTranscript, text);
+        else interim = mergeRecognitionText(interim, text);
       }
-      speechStatus.textContent = interim || finalTranscript || '聞いています…';
+      speechStatus.textContent = mergeRecognitionText(finalTranscript, interim) || '聞いています…';
     };
     recognition.onerror = (event) => {
       if (event.error === 'aborted') return;
@@ -231,11 +288,12 @@
   }
 
   async function showDetail(id) {
-    const note = await getNote(id);
+    const [note, folders] = await Promise.all([getNote(id), getAllFolders()]);
     if (!note) return;
     detailId = id;
     $('#detail-date').textContent = formatFullDate(note.createdAt);
     $('#detail-method').textContent = methodLabels[note.inputMethod] || note.inputMethod;
+    $('#detail-folder').textContent = folderName(note.folderId, folders);
     $('#detail-text').textContent = note.body || '音声メモ';
     const audio = $('#detail-audio');
     if (detailAudioUrl) URL.revokeObjectURL(detailAudioUrl);
@@ -323,11 +381,64 @@
   async function saveAudioNote() {
     if (!recordedBlob) return;
     const now = new Date().toISOString();
-    await putNote({ id: crypto.randomUUID(), body: '音声メモ', inputMethod: 'audio', createdAt: now, updatedAt: now, audioBlob: recordedBlob });
+    await putNote({ id: crypto.randomUUID(), body: '音声メモ', folderId: $('#audio-folder').value, inputMethod: 'audio', createdAt: now, updatedAt: now, audioBlob: recordedBlob });
     audioDialog.close();
     resetRecorder();
     await renderNotes();
     showToast('✓ 音声を保存しました');
+  }
+
+  async function openFolderDialog() {
+    await renderNotes();
+    folderDialog.showModal();
+  }
+
+  async function createFolder(name) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const folders = await getAllFolders();
+    const existing = folders.find((folder) => folder.name.toLocaleLowerCase('ja') === trimmed.toLocaleLowerCase('ja'));
+    const folder = existing || { id: crypto.randomUUID(), name: trimmed, createdAt: new Date().toISOString() };
+    if (!existing) await putFolder(folder);
+    currentFolderId = folder.id;
+    activeFolderId = folder.id;
+    localStorage.setItem('tabi-memo-current-folder', currentFolderId);
+    $('#folder-name').value = '';
+    await renderNotes();
+    folderDialog.close();
+    showToast(existing ? '保存先を選びました' : '✓ フォルダーを作成しました');
+  }
+
+  async function prepareAudioDialog() {
+    resetRecorder();
+    $('#audio-folder').innerHTML = folderOptions(await getAllFolders(), currentFolderId);
+    audioDialog.showModal();
+  }
+
+  function safeFileName(value) {
+    return value.replace(/[\\/:*?"<>|]/g, '＿').trim() || '旅メモ';
+  }
+
+  async function downloadActiveFolder() {
+    const [folders, allNotes] = await Promise.all([getAllFolders(), getAllNotes()]);
+    const notes = (activeFolderId === 'all' ? allNotes : allNotes.filter((note) => (note.folderId || '') === activeFolderId))
+      .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    const title = activeFolderId === 'all' ? '旅メモ・すべて' : folderName(activeFolderId, folders);
+    const lines = [`${title}`, `書き出し日時: ${formatFullDate(new Date().toISOString())}`, '', ...notes.flatMap((note) => [
+      `--- ${formatFullDate(note.createdAt)} / ${methodLabels[note.inputMethod]?.replace(/^[^ ]+ /, '') || '旅メモ'} ---`,
+      note.body || '音声メモ（音声データはアプリ内で再生できます）',
+      ''
+    ])];
+    const blob = new Blob(['\uFEFF', lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${safeFileName(title)}.txt`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast(`↓ ${notes.length}件を書き出しました`);
   }
 
   async function registerWebMcpTools() {
@@ -351,7 +462,7 @@
         const body = typeof input?.body === 'string' ? input.body.trim() : '';
         if (!body || body.length > 2000) throw new Error('本文は1〜2000文字で入力してください。');
         const now = new Date().toISOString();
-        const note = { id: crypto.randomUUID(), body, inputMethod: 'text', createdAt: now, updatedAt: now };
+        const note = { id: crypto.randomUUID(), body, folderId: currentFolderId, inputMethod: 'text', createdAt: now, updatedAt: now };
         await putNote(note);
         await renderNotes();
         showToast();
@@ -362,7 +473,29 @@
 
   speechButton.addEventListener('click', toggleRecognition);
   $('#text-button').addEventListener('click', () => openEditor());
-  $('#audio-button').addEventListener('click', () => { resetRecorder(); audioDialog.showModal(); });
+  $('#audio-button').addEventListener('click', () => prepareAudioDialog().catch(handleError));
+  $('#destination-button').addEventListener('click', () => openFolderDialog().catch(handleError));
+  $('#new-folder-button').addEventListener('click', () => openFolderDialog().catch(handleError));
+  $('#download-folder-button').addEventListener('click', () => downloadActiveFolder().catch(handleError));
+  $('#folder-tabs').addEventListener('click', (event) => {
+    const tab = event.target.closest('[data-folder-filter]');
+    if (!tab) return;
+    activeFolderId = tab.dataset.folderFilter;
+    renderNotes().catch(handleError);
+  });
+  $('#folder-picker-list').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-pick-folder]');
+    if (!button) return;
+    currentFolderId = button.dataset.pickFolder;
+    activeFolderId = currentFolderId;
+    localStorage.setItem('tabi-memo-current-folder', currentFolderId);
+    folderDialog.close();
+    renderNotes().then(() => showToast('保存先を選びました')).catch(handleError);
+  });
+  $('#folder-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    createFolder($('#folder-name').value).catch(handleError);
+  });
   noteText.addEventListener('input', updateCharCount);
   editorForm.addEventListener('submit', (event) => { event.preventDefault(); saveTextNote().catch(handleError); });
   retryButton.addEventListener('click', () => { closeEditor(); window.setTimeout(toggleRecognition, 100); });
@@ -373,7 +506,7 @@
   $('#edit-button').addEventListener('click', async () => {
     const note = await getNote(detailId);
     detailDialog.close();
-    openEditor({ body: note.body || '', method: note.inputMethod, id: note.id });
+    openEditor({ body: note.body || '', method: note.inputMethod, id: note.id, folderId: note.folderId || '' });
   });
   $('#delete-button').addEventListener('click', () => confirmDialog.showModal());
   $('#cancel-delete').addEventListener('click', () => confirmDialog.close());
@@ -394,7 +527,7 @@
     dialog.close();
     if (dialog === audioDialog) resetRecorder();
   });
-  [editorDialog, detailDialog, audioDialog].forEach((dialog) => {
+  [editorDialog, detailDialog, audioDialog, folderDialog].forEach((dialog) => {
     dialog.addEventListener('click', (event) => {
       if (event.target === dialog) {
         if (dialog === audioDialog && mediaRecorder?.state === 'recording') mediaRecorder.stop();

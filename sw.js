@@ -1,4 +1,4 @@
-const CACHE_NAME = 'tabi-memo-v1';
+const CACHE_NAME = 'tabi-memo-v2';
 const APP_SHELL = [
   './',
   './index.html',
